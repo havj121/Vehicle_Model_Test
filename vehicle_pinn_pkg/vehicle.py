@@ -5,7 +5,8 @@ from abc import ABC, abstractmethod
 
 class BaseVehicleModel(ABC):
     """
-    Abstract base class for vehicle models.
+    Abstract base class for vehicle models;
+    subclasses must implement get_dynamics() and get_dynamics_torch().
     """
     def __init__(self, name="BaseVehicle"):
         self.name = name
