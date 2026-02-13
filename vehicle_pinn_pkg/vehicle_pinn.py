@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
-from .vehicle import LateralModel, LongitudinalModel, CombinedModel
+from .vehicle import BicycleModel, LongitudinalModel, CombinedModel
 from .pinn_trainer import PINNTrainer
 
 class VehiclePINN:
@@ -16,7 +16,7 @@ class VehiclePINN:
         self.model_type = model_type.lower()
         
         if self.model_type == 'lateral':
-            self.vehicle = LateralModel(**vehicle_params)
+            self.vehicle = BicycleModel(**vehicle_params)
         elif self.model_type == 'longitudinal':
             self.vehicle = LongitudinalModel(**vehicle_params)
         elif self.model_type == 'combined':

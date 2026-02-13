@@ -53,11 +53,16 @@ class PINNTrainer:
             grad_y_i = torch.autograd.grad(y_i, t, grad_outputs=torch.ones_like(y_i), create_graph=True)[0]
             y_t_list.append(grad_y_i)
         
-        y_t = torch.cat(y_t_list, dim=1) # [batch, state_dim]
+        # Calculate expected derivatives from vehicle dynamics
+        # y_pred is the state, u is the input
+        # get_dynamics_torch returns a list of tensors [dy1_dt, dy2_dt, ...]
+        target_dy_dt_list = self.vehicle.get_dynamics_torch(t, y_pred, u)
         
-        # Ensure u is properly formatted (e.g., list of tensors if multi-input)
-        # We assume u is passed as a list of tensors or a single tensor, matching what compute_physics_residual expects
-        residuals = self.vehicle.compute_physics_residual(t, y_pred, y_t, u)
+        # Compute residuals: dy_dt_pred - f(t, y_pred, u)
+        residuals = []
+        for i in range(len(y_t_list)):
+            res = y_t_list[i] - target_dy_dt_list[i]
+            residuals.append(res)
         
         # Sum of squared residuals
         loss_pde = sum([torch.mean(res**2) for res in residuals])
