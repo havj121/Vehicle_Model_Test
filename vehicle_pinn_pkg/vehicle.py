@@ -38,6 +38,44 @@ class BaseVehicleModel(ABC):
         """
         return self.parameters
 
+    def _check_input_dims(self, x, u):
+        """
+        Check if dimensions of state x and input u match model definitions.
+        x: state vector (numpy array or torch tensor)
+        u: input vector (scalar, list, numpy array or torch tensor)
+        """
+        # 1. Check State x
+        if isinstance(x, (np.ndarray, list)):
+            x_len = len(x)
+        elif torch.is_tensor(x):
+            # For torch, check the last dimension if it's a batch [N, state_dim]
+            x_len = x.shape[-1]
+        else:
+            x_len = 1 if np.isscalar(x) else 0
+
+        if x_len != self.state_dim:
+            raise ValueError(
+                f"[{self.name}] State dimension mismatch!\n"
+                f"Expected: {self.state_dim} (Names: {self.state_names})\n"
+                f"Received dimension: {x_len}"
+            )
+
+        # 2. Check Input u
+        if isinstance(u, (list, np.ndarray)):
+            u_len = len(u)
+        elif torch.is_tensor(u):
+            # For torch, handle both scalar [N, 1] and vector [N, input_dim]
+            u_len = u.shape[-1] if u.dim() > 0 else 1
+        else:
+            u_len = 1 if np.isscalar(u) else 0
+
+        if u_len != self.input_dim:
+            raise ValueError(
+                f"[{self.name}] Input dimension mismatch!\n"
+                f"Expected: {self.input_dim} (Names: {self.input_names})\n"
+                f"Received dimension: {u_len}"
+            )
+
     def _update_coefficients(self):
         """
         Optional: Update pre-calculated coefficients if the model uses them.
@@ -46,28 +84,28 @@ class BaseVehicleModel(ABC):
         pass
 
     @abstractmethod
-    def get_dynamics(self, t, y, u):
+    def get_dynamics(self, t, x, u):
         """
-        Compute dy/dt = f(t, y, u) for numerical integration (numpy/scalar).
+        Compute dx/dt = f(t, x, u) for numerical integration (numpy/scalar).
         """
         pass
 
     @abstractmethod
-    def get_dynamics_torch(self, t, y, u):
+    def get_dynamics_torch(self, t, x, u):
         """
-        Compute dy/dt = f(t, y, u) for PINN physics loss (torch tensors).
-        Returns a list of tensors [dy1_dt, dy2_dt, ...] corresponding to state_dim.
+        Compute dx/dt = f(t, x, u) for PINN physics loss (torch tensors).
+        Returns a list of tensors [dx1_dt, dx2_dt, ...] corresponding to state_dim.
         """
         pass
 
-    def generate_ground_truth(self, t_span, y0, u, n_points=1000):
+    def generate_ground_truth(self, t_span, x0, u, n_points=1000):
         """
         Generates ground truth data using numerical integration.
         """
         t_eval = np.linspace(t_span[0], t_span[1], n_points)
         sol = solve_ivp(
-            lambda t, y: self.get_dynamics(t, y, u),
-            t_span, y0, t_eval=t_eval, method='RK45'
+            lambda t, x: self.get_dynamics(t, x, u),
+            t_span, x0, t_eval=t_eval, method='RK45'
         )
         return sol.t, sol.y.T  # t: [N], y: [N, state_dim]
 
@@ -109,8 +147,9 @@ class BicycleModel(BaseVehicleModel):
         self.b1 = Cf / (m * Vx)
         self.b2 = a * Cf / Iz
 
-    def get_dynamics(self, t, y, u):
-        beta, r = y
+    def get_dynamics(self, t, x, u):
+        self._check_input_dims(x, u)
+        beta, r = x
         # steering angle
         delta = u
         
@@ -118,10 +157,12 @@ class BicycleModel(BaseVehicleModel):
         dr_dt = self.a21 * beta + self.a22 * r + self.b2 * delta
         return [dbeta_dt, dr_dt]
 
-    def get_dynamics_torch(self, t, y, u):
-        # y: [batch, 2], u: tensor or scalar
-        beta = y[:, 0:1]
-        r = y[:, 1:2]
+    def get_dynamics_torch(self, t, x, u):
+        # We skip check_input_dims in torch version for performance 
+        # as it's called every iteration, or we could keep it if desired.
+        # x: [batch, 2], u: tensor or scalar
+        beta = x[:, 0:1]
+        r = x[:, 1:2]
         delta = u
         
         dbeta_dt = self.a11 * beta + self.a12 * r + self.b1 * delta
@@ -158,21 +199,22 @@ class LongitudinalModel(BaseVehicleModel):
         # but we could add logic here if needed (e.g., updating lookup tables)
         pass
 
-    def get_dynamics(self, t, y, u):
-        p = {k: v['value'] for k, v in self.parameters.items()}
-        v = y[0]
+    def get_dynamics(self, t, x, u):
+        self._check_input_dims(x, u)
+        v = x[0]
         Fx = u[0] if isinstance(u, (list, tuple, np.ndarray)) else u
         
+        p = {k: v['value'] for k, v in self.parameters.items()}
         F_aero = 0.5 * p['rho'] * p['Cd'] * p['A'] * v**2
         F_roll = p['m'] * p['g'] * p['f']
         
         dv_dt = (Fx - F_aero - F_roll) / p['m']
         return [dv_dt]
 
-    def get_dynamics_torch(self, t, y, u):
+    def get_dynamics_torch(self, t, x, u):
         p = {k: v['value'] for k, v in self.parameters.items()}
-        # y: [batch, 1], u: tensor/scalar
-        v = y[:, 0:1]
+        # x: [batch, 1], u: tensor/scalar
+        v = x[:, 0:1]
         Fx = u
         
         F_aero = 0.5 * p['rho'] * p['Cd'] * p['A'] * v**2
@@ -216,9 +258,10 @@ class CombinedModel(BaseVehicleModel):
         # but we call this to maintain consistency and allow future extensions.
         pass
 
-    def get_dynamics(self, t, y, u):
+    def get_dynamics(self, t, x, u):
+        self._check_input_dims(x, u)
         p = {k: v['value'] for k, v in self.parameters.items()}
-        v, beta, r = y
+        v, beta, r = x
         Fx, delta = u
         
         # Longitudinal
@@ -240,12 +283,12 @@ class CombinedModel(BaseVehicleModel):
         
         return [dv_dt, dbeta_dt, dr_dt]
 
-    def get_dynamics_torch(self, t, y, u):
+    def get_dynamics_torch(self, t, x, u):
         p = {k: v['value'] for k, v in self.parameters.items()}
-        # y: [batch, 3], u: list of tensors [Fx, delta]
-        v = y[:, 0:1]
-        beta = y[:, 1:2]
-        r = y[:, 2:3]
+        # x: [batch, 3], u: list of tensors [Fx, delta]
+        v = x[:, 0:1]
+        beta = x[:, 1:2]
+        r = x[:, 2:3]
         
         Fx = u[0]
         delta = u[1]
