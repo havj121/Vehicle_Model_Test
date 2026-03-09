@@ -1,1 +1,1 @@
-from .vehicle_pinn import VehiclePINN
+from .VehiclePINN import VehiclePINN
